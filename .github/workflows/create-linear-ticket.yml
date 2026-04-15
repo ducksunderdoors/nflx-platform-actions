@@ -1,0 +1,61 @@
+name: Create Linear Security Ticket
+
+on:
+  workflow_dispatch:
+    inputs:
+      severity:
+        description: 'Severity level'
+        required: true
+      finding_summary:
+        description: 'Finding summary'
+        required: true
+      source:
+        description: 'Finding source'
+        required: true
+      port_context:
+        description: 'Port context'
+        required: true
+
+jobs:
+  create-linear-ticket:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Linear Issue
+        env:
+          LINEAR_API_TOKEN: ${{ secrets.LINEAR_API_TOKEN }}
+        run: |
+          ENTITY=$(echo '${{ inputs.port_context }}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('entity','unknown'))")
+          
+          TITLE="[$ENTITY] ${{ inputs.severity }}: ${{ inputs.finding_summary }}"
+          
+          TEAM_ID=$(curl -s -X POST \
+            -H "Authorization: $LINEAR_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"query": "{ teams { nodes { id name } } }"}' \
+            https://api.linear.app/graphql | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          teams = data['data']['teams']['nodes']
+          for t in teams:
+            if 'NFLX' in t['name'] or 'Platform' in t['name']:
+              print(t['id'])
+              break
+          else:
+            print(teams[0]['id'])
+          ")
+          
+          curl -s -X POST \
+            -H "Authorization: $LINEAR_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\": \"mutation { issueCreate(input: { title: \\\"$TITLE\\\", teamId: \\\"$TEAM_ID\\\", description: \\\"**Source:** ${{ inputs.source }}\\\\n**Severity:** ${{ inputs.severity }}\\\\n**Service:** $ENTITY\\\\n**Finding:** ${{ inputs.finding_summary }}\\\" }) { success issue { id title url } } }\"}" \
+            https://api.linear.app/graphql
+
+      - name: Report Success to Port
+        uses: port-labs/port-github-action@v1
+        with:
+          clientId: ${{ secrets.PORT_CLIENT_ID }}
+          clientSecret: ${{ secrets.PORT_CLIENT_SECRET }}
+          operation: PATCH_RUN
+          runId: ${{ fromJson(inputs.port_context).runId }}
+          status: SUCCESS
+          summary: Linear ticket created successfully
