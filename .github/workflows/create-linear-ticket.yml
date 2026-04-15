@@ -24,10 +24,20 @@ jobs:
         env:
           LINEAR_API_TOKEN: ${{ secrets.LINEAR_API_TOKEN }}
         run: |
-          ENTITY=$(echo '${{ inputs.port_context }}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('entity','unknown'))")
-          
+          ENTITY=$(echo '${{ inputs.port_context }}' | python3 -c "
+          import sys, json
+          raw = sys.stdin.read()
+          d = json.loads(raw)
+          entity = d.get('entity', {})
+          if isinstance(entity, dict):
+              print(entity.get('title', entity.get('identifier', 'unknown')))
+          else:
+              print(str(entity))
+          " 2>/dev/null || echo "unknown-service")
+
           TITLE="[$ENTITY] ${{ inputs.severity }}: ${{ inputs.finding_summary }}"
-          
+          DESC="**Source:** ${{ inputs.source }}\n**Severity:** ${{ inputs.severity }}\n**Service:** $ENTITY\n**Finding:** ${{ inputs.finding_summary }}"
+
           TEAM_ID=$(curl -s -X POST \
             -H "Authorization: $LINEAR_API_TOKEN" \
             -H "Content-Type: application/json" \
@@ -37,17 +47,17 @@ jobs:
           data = json.load(sys.stdin)
           teams = data['data']['teams']['nodes']
           for t in teams:
-            if 'NFLX' in t['name'] or 'Platform' in t['name']:
-              print(t['id'])
-              break
+              if 'NFLX' in t['name'] or 'Platform' in t['name']:
+                  print(t['id'])
+                  break
           else:
-            print(teams[0]['id'])
+              print(teams[0]['id'])
           ")
-          
+
           curl -s -X POST \
             -H "Authorization: $LINEAR_API_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"query\": \"mutation { issueCreate(input: { title: \\\"$TITLE\\\", teamId: \\\"$TEAM_ID\\\", description: \\\"**Source:** ${{ inputs.source }}\\\\n**Severity:** ${{ inputs.severity }}\\\\n**Service:** $ENTITY\\\\n**Finding:** ${{ inputs.finding_summary }}\\\" }) { success issue { id title url } } }\"}" \
+            --data-binary "{\"query\": \"mutation { issueCreate(input: { title: $(echo $TITLE | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))'), teamId: \\\"$TEAM_ID\\\", description: $(echo -e $DESC | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))') }) { success issue { id title url } } }\"}" \
             https://api.linear.app/graphql
 
       - name: Report Success to Port
